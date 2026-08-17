@@ -1,0 +1,54 @@
+{
+  "expo": {
+    "name": "VELA",
+    "slug": "vela",
+    "version": "1.0.0",
+    "scheme": "vela",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#050505",
+    "ios": {
+      "supportsTablet": true,
+      "backgroundColor": "#050505",
+      "bundleIdentifier": "com.ercesain.vela",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#050505",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "backgroundColor": "#050505",
+          "imageWidth": 160
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "d9bb0d5e-c339-4e39-9f37-9a4a43e5e216"
+      }
+    },
+    "owner": "ercesain"
+  }
+}
