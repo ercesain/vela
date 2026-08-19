@@ -8,6 +8,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { View } from 'react-native';
 
 import { colors, fontsToLoad } from '@/theme';
+import { AstroProfileProvider } from '@/profile';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -31,20 +32,24 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <View style={{ flex: 1, backgroundColor: colors.background }} onLayout={onLayoutRootView}>
-          <StatusBar style="light" />
-          <Stack
-            screenOptions={{
-              headerShown: false,
-              contentStyle: { backgroundColor: colors.background },
-              animation: 'fade',
-            }}
-          >
-            <Stack.Screen name="index" />
-            <Stack.Screen name="reading/intention" options={{ animation: 'slide_from_right' }} />
-            <Stack.Screen name="reading/result" options={{ animation: 'slide_from_right' }} />
-          </Stack>
-        </View>
+        <AstroProfileProvider>
+          <View style={{ flex: 1, backgroundColor: colors.background }} onLayout={onLayoutRootView}>
+            <StatusBar style="light" />
+            <Stack
+              screenOptions={{
+                headerShown: false,
+                contentStyle: { backgroundColor: colors.background },
+                animation: 'fade',
+              }}
+            >
+              <Stack.Screen name="index" />
+              <Stack.Screen name="onboarding/astro-profile" options={{ animation: 'fade' }} />
+              <Stack.Screen name="oracle/[id]/world" options={{ animation: 'fade' }} />
+              <Stack.Screen name="reading/intention" options={{ animation: 'slide_from_right' }} />
+              <Stack.Screen name="reading/result" options={{ animation: 'slide_from_right' }} />
+            </Stack>
+          </View>
+        </AstroProfileProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

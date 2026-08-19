@@ -1,248 +1,264 @@
-import React, { useRef, useState } from 'react';
-import { Dimensions, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Dimensions, Image, Pressable, StyleSheet, View } from 'react-native';
 import Animated, {
   Extrapolation,
   interpolate,
   runOnJS,
-  useAnimatedScrollHandler,
   useAnimatedStyle,
   useSharedValue,
+  withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
-import { LinearGradient } from 'expo-linear-gradient';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
 
-import { PrimaryButton } from './PrimaryButton';
-import { colors, radius, spacing, typeScale } from '@/theme';
+import { colors, radius } from '@/theme';
 import type { OracleProfile } from '@/types';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
-// Small base footprint — the center card is scaled up ~1.6x to dominate,
-// while a tight stride keeps two Oracles legible on each side at once.
-const CARD_WIDTH = Math.round(SCREEN_WIDTH * 0.26);
-const CARD_ASPECT = 0.78; // width / height
+
+// Portrait-first card geometry: larger and taller so the character owns the
+// home stage instead of floating inside a small square-ish card.
+const CARD_WIDTH = Math.round(Math.min(SCREEN_WIDTH * 0.56, 270));
+const CARD_ASPECT = 0.60; // width / height
 const CARD_HEIGHT = Math.round(CARD_WIDTH / CARD_ASPECT);
-// Cards overlap their neighbors so all 5 read as one continuous stage
-// rather than separate pages. Each "slide" lane is STRIDE-wide (narrower
-// than the card itself) and the oversized card is centered within it —
-// this keeps the scrollable content's total width equal to n * STRIDE, so
-// snap targets for every index (including the first/last) are actually
-// reachable. (A negative marginRight trick was tried instead but shrinks
-// total content width below the last index's target, permanently
-// clipping its scale/opacity/detail peak — see PROBLEM_SOLVING notes.)
-const STRIDE = Math.round(CARD_WIDTH * 0.68);
-const SIDE_INSET = SCREEN_WIDTH / 2 - STRIDE / 2;
-const MAX_SCALE = 1.6;
-// Comfortable, constant-size footprint for the specialty + CTA — these do
-// NOT scale with the tiny portrait card, so "DÜNYASINA GİR" never wraps.
-const DETAIL_WIDTH = 200;
-// Cleared below the portrait's largest (scaled-up, center) visual extent.
-const DETAIL_TOP = Math.round(CARD_HEIGHT * (1 + (MAX_SCALE - 1) / 2)) + spacing.sm;
-export const ORACLE_STAGE_HEIGHT = DETAIL_TOP + 110;
+
+export const ORACLE_STAGE_HEIGHT = CARD_HEIGHT;
+export const ORACLE_CARD_WIDTH = CARD_WIDTH;
+
+// Keep the proven 5-card coverflow geometry. Only the card box itself is taller.
+const DISTANCE_STEPS = [-2, -1, 0, 1, 2];
+const X_OUTPUT = [-0.44, -0.28, 0, 0.28, 0.44].map((f) => f * SCREEN_WIDTH);
+const SCALE_OUTPUT = [0.66, 0.82, 1, 0.82, 0.66];
+const OPACITY_OUTPUT = [0.72, 0.86, 1, 0.86, 0.72];
+const Z_BY_ABS_DISTANCE = [50, 40, 30];
+
+const DRAG_FOLLOW_FACTOR = 0.35;
+const MAX_DRAG = SCREEN_WIDTH * 0.22;
+const SWIPE_THRESHOLD = SCREEN_WIDTH * 0.16;
+const TRANSITION_DURATION = 340;
+
+function circularDistance(pos: number, active: number, total: number) {
+  let raw = pos - active;
+  const half = total / 2;
+  if (raw > half) raw -= total;
+  if (raw < -half) raw += total;
+  return raw;
+}
+
+export function buildStageOrder(list: OracleProfile[]): OracleProfile[] {
+  if (list.length !== 5) return list;
+  return [list[0], list[1], list[2], list[4], list[3]];
+}
 
 interface OracleCarouselProps {
   oracles: OracleProfile[];
   onIndexChange?: (index: number) => void;
-  onEnter?: (oracle: OracleProfile) => void;
 }
 
-interface SlideProps {
+interface StageCardProps {
   oracle: OracleProfile;
-  index: number;
-  scrollX: SharedValue<number>;
+  targetDistance: number;
   isActive: boolean;
-  zIndex: number;
-  onSelect: (index: number) => void;
-  onEnter: (oracle: OracleProfile) => void;
+  dragX: SharedValue<number>;
+  onSelect: () => void;
 }
 
-function OracleStageCard({ oracle, index, scrollX, isActive, zIndex, onSelect, onEnter }: SlideProps) {
-  // Wide falloff — the portrait + name read across roughly ±2 cards, so
-  // all 5 Oracles stay visually present at once.
-  const wideRange = [-2, -1, 0, 1, 2].map((d) => (index + d) * STRIDE);
-  // Narrow falloff — the specialty line + CTA only surface near dead
-  // center, keeping the "dominant" Oracle unambiguous.
-  const detailRange = [index * STRIDE - STRIDE * 0.35, index * STRIDE, index * STRIDE + STRIDE * 0.35];
+function OracleStageCard({
+  oracle,
+  targetDistance,
+  isActive,
+  dragX,
+  onSelect,
+}: StageCardProps) {
+  const distance = useSharedValue(targetDistance);
+  const didMount = useRef(false);
+
+  useEffect(() => {
+    if (!didMount.current) {
+      didMount.current = true;
+      distance.value = targetDistance;
+      return;
+    }
+
+    distance.value = withTiming(targetDistance, {
+      duration: TRANSITION_DURATION,
+    });
+  }, [targetDistance]);
 
   const cardStyle = useAnimatedStyle(() => {
-    const scale = interpolate(scrollX.value, wideRange, [0.52, 0.82, MAX_SCALE, 0.82, 0.52], Extrapolation.CLAMP);
-    const opacity = interpolate(scrollX.value, wideRange, [0.35, 0.72, 1, 0.72, 0.35], Extrapolation.CLAMP);
-    const translateY = interpolate(scrollX.value, wideRange, [20, 9, 0, 9, 20], Extrapolation.CLAMP);
-    const rotateY = interpolate(scrollX.value, wideRange, [14, 8, 0, -8, -14], Extrapolation.CLAMP);
+    const scale = interpolate(
+      distance.value,
+      DISTANCE_STEPS,
+      SCALE_OUTPUT,
+      Extrapolation.CLAMP,
+    );
+    const x = interpolate(
+      distance.value,
+      DISTANCE_STEPS,
+      X_OUTPUT,
+      Extrapolation.CLAMP,
+    );
+    const opacity = interpolate(
+      distance.value,
+      DISTANCE_STEPS,
+      OPACITY_OUTPUT,
+      Extrapolation.CLAMP,
+    );
 
     return {
       opacity,
-      transform: [
-        { perspective: 900 },
-        { translateY },
-        { scale },
-        { rotateY: `${rotateY}deg` },
-      ],
+      transform: [{ translateX: x + dragX.value }, { scale }],
     };
   });
 
-  const detailStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(scrollX.value, detailRange, [0, 1, 0], Extrapolation.CLAMP),
-  }));
+  const zIndex =
+    Z_BY_ABS_DISTANCE[
+      Math.min(2, Math.round(Math.abs(targetDistance)))
+    ];
 
   return (
-    <View style={[styles.slide, { zIndex }]}>
-      <Animated.View style={[styles.column, cardStyle]}>
-        <Pressable onPress={() => onSelect(index)} disabled={isActive}>
-          <View style={[styles.portraitFrame, { borderColor: isActive ? oracle.accent : colors.borderSubtle }]}>
-            <Image source={oracle.artwork} style={styles.portraitImage} resizeMode="cover" />
-            <LinearGradient
-              colors={['transparent', 'rgba(10,6,12,0.88)']}
-              locations={[0.45, 1]}
-              style={styles.portraitFade}
-            />
-            <Text style={styles.portraitName} numberOfLines={1}>
-              {oracle.name}
-            </Text>
-          </View>
-        </Pressable>
-      </Animated.View>
-
-      {/* Specialty + CTA live outside the scaled column at a constant,
-          comfortable width so the button text never wraps. Positioned
-          relative to the slide's own (STRIDE-wide) center, not the wider
-          card, since the card is centered within the slide. */}
-      <Animated.View style={[styles.detail, detailStyle]} pointerEvents={isActive ? 'auto' : 'none'}>
-        <Text style={[styles.specialty, { color: oracle.accent }]} numberOfLines={2}>
-          {oracle.specialty}
-        </Text>
-        <PrimaryButton
-          label="DÜNYASINA GİR"
-          variant="magenta"
-          disabled={!isActive}
-          onPress={() => onEnter(oracle)}
-        />
-      </Animated.View>
-    </View>
+    <Animated.View style={[styles.card, { zIndex }, cardStyle]}>
+      <Pressable
+        onPress={onSelect}
+        disabled={isActive}
+        style={StyleSheet.absoluteFill}
+      >
+        <View
+          style={[
+            styles.portraitFrame,
+            {
+              borderColor: isActive
+                ? oracle.accent
+                : colors.borderSubtle,
+            },
+          ]}
+        >
+          <Image
+            source={oracle.artwork}
+            style={[
+              styles.portraitImage,
+              oracle.id === 'luna' && styles.lunaPortraitFocus,
+            ]}
+            resizeMode="cover"
+          />
+        </View>
+      </Pressable>
+    </Animated.View>
   );
 }
 
 /**
- * A continuous horizontal stage of all 5 Oracles: the centered Oracle
- * reads large and dominant with its specialty + CTA, while two Oracles
- * peek in on each side at reduced scale/opacity with a slight inward
- * (perspective) tilt, so the whole row feels like one world rather than
- * isolated pages.
+ * 5-card circular coverflow.
+ * Luna starts centered; two Oracles remain visible on each side.
+ * The geometry/gesture behavior is preserved from the working version —
+ * only the cards are now portrait-oriented and visually larger.
  */
-export function OracleCarousel({ oracles, onIndexChange, onEnter }: OracleCarouselProps) {
-  const scrollX = useSharedValue(0);
-  const lastIndex = useSharedValue(0);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const scrollRef = useRef<Animated.ScrollView>(null);
+export function OracleCarousel({
+  oracles,
+  onIndexChange,
+}: OracleCarouselProps) {
+  const stageOracles = useRef(buildStageOrder(oracles)).current;
+  const total = stageOracles.length;
+  const [activeStageIndex, setActiveStageIndex] = useState(0);
+  const dragX = useSharedValue(0);
 
-  const registerIndexChange = (index: number) => {
-    setActiveIndex(index);
-    onIndexChange?.(index);
+  const changeActive = (nextStageIndex: number) => {
+    const wrapped = ((nextStageIndex % total) + total) % total;
+
+    if (wrapped === activeStageIndex) return;
+
     Haptics.selectionAsync();
+    setActiveStageIndex(wrapped);
   };
 
-  const scrollHandler = useAnimatedScrollHandler({
-    onScroll: (event) => {
-      scrollX.value = event.contentOffset.x;
-      const nextIndex = Math.round(event.contentOffset.x / STRIDE);
-      const clamped = Math.max(0, Math.min(oracles.length - 1, nextIndex));
-      if (clamped !== lastIndex.value) {
-        lastIndex.value = clamped;
-        runOnJS(registerIndexChange)(clamped);
+  useEffect(() => {
+    const activeOracle = stageOracles[activeStageIndex];
+    const originalIndex = oracles.findIndex(
+      (oracle) => oracle.id === activeOracle.id,
+    );
+
+    onIndexChange?.(originalIndex === -1 ? 0 : originalIndex);
+  }, [activeStageIndex, onIndexChange, oracles, stageOracles]);
+
+  const pan = Gesture.Pan()
+    .activeOffsetX([-10, 10])
+    .onUpdate((event) => {
+      dragX.value = Math.max(
+        -MAX_DRAG,
+        Math.min(
+          MAX_DRAG,
+          event.translationX * DRAG_FOLLOW_FACTOR,
+        ),
+      );
+    })
+    .onEnd((event) => {
+      dragX.value = withTiming(0, { duration: 260 });
+
+      if (event.translationX <= -SWIPE_THRESHOLD) {
+        runOnJS(changeActive)(activeStageIndex + 1);
+      } else if (event.translationX >= SWIPE_THRESHOLD) {
+        runOnJS(changeActive)(activeStageIndex - 1);
       }
-    },
-  });
-
-  const handleSelect = (index: number) => {
-    scrollRef.current?.scrollTo({ x: index * STRIDE, animated: true });
-  };
-
-  const handleEnter = (oracle: OracleProfile) => {
-    onEnter?.(oracle);
-  };
+    });
 
   return (
-    <Animated.ScrollView
-      ref={scrollRef}
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      decelerationRate="fast"
-      snapToInterval={STRIDE}
-      snapToAlignment="start"
-      contentContainerStyle={{ paddingHorizontal: SIDE_INSET }}
-      scrollEventThrottle={16}
-      onScroll={scrollHandler}
-      style={styles.scrollView}
-    >
-      {oracles.map((oracle, index) => (
-        <OracleStageCard
-          key={oracle.id}
-          oracle={oracle}
-          index={index}
-          scrollX={scrollX}
-          isActive={index === activeIndex}
-          zIndex={100 - Math.abs(index - activeIndex) * 10}
-          onSelect={handleSelect}
-          onEnter={handleEnter}
-        />
-      ))}
-    </Animated.ScrollView>
+    <GestureDetector gesture={pan}>
+      <View style={styles.stage}>
+        {stageOracles.map((oracle, stageIndex) => (
+          <OracleStageCard
+            key={oracle.id}
+            oracle={oracle}
+            targetDistance={circularDistance(
+              stageIndex,
+              activeStageIndex,
+              total,
+            )}
+            isActive={stageIndex === activeStageIndex}
+            dragX={dragX}
+            onSelect={() => changeActive(stageIndex)}
+          />
+        ))}
+      </View>
+    </GestureDetector>
   );
 }
 
 const styles = StyleSheet.create({
-  scrollView: {
-    height: ORACLE_STAGE_HEIGHT,
-  },
-  slide: {
-    width: STRIDE,
+  stage: {
     height: ORACLE_STAGE_HEIGHT,
     alignItems: 'center',
-    justifyContent: 'flex-start',
+    justifyContent: 'center',
   },
-  column: {
-    width: CARD_WIDTH,
-  },
-  portraitFrame: {
+
+  card: {
+    position: 'absolute',
+    top: 0,
+    left: '50%',
+    marginLeft: -CARD_WIDTH / 2,
     width: CARD_WIDTH,
     height: CARD_HEIGHT,
+  },
+
+  portraitFrame: {
+    width: '100%',
+    height: '100%',
     borderRadius: radius.lg,
     borderWidth: 1.5,
     overflow: 'hidden',
-    backgroundColor: colors.deepPurple,
+    backgroundColor: colors.background,
   },
+
   portraitImage: {
     width: '100%',
     height: '100%',
   },
-  portraitFade: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: '48%',
-  },
-  portraitName: {
-    position: 'absolute',
-    bottom: spacing.sm,
-    left: spacing.xs,
-    right: spacing.xs,
-    ...typeScale.displaySmall,
-    fontSize: 20,
-    lineHeight: 24,
-    color: colors.textPrimary,
-    textAlign: 'center',
-  },
-  detail: {
-    position: 'absolute',
-    top: DETAIL_TOP,
-    left: STRIDE / 2 - DETAIL_WIDTH / 2,
-    width: DETAIL_WIDTH,
-    alignItems: 'center',
-  },
-  specialty: {
-    ...typeScale.label,
-    textAlign: 'center',
-    marginBottom: spacing.sm,
+
+  lunaPortraitFocus: {
+    transform: [
+      { scale: 1.04 },
+      { translateX: -CARD_WIDTH * 0.035 },
+      { translateY: CARD_HEIGHT * 0.02 },
+    ],
   },
 });

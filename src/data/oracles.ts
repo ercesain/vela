@@ -2,7 +2,7 @@ import { colors } from '@/theme';
 import type { OracleProfile } from '@/types';
 
 /**
- * Only Luna has final production art today (`assets/characters/luna.png`).
+ * Only Luna has final production art today (`assets/characters/luna-enter.png`).
  * The rest use illustrated placeholders at the same path convention —
  * swap the file in place when real art is ready, no code changes needed.
  */
@@ -12,7 +12,7 @@ export const oracles: OracleProfile[] = [
     name: 'Luna',
     specialty: 'Aşk • İlişkiler • Duygusal Bağ',
     accent: colors.magenta,
-    artwork: require('../../assets/characters/luna.png'),
+    artwork: require('../../assets/characters/luna-enter.png'),
   },
   {
     id: 'nyx',
