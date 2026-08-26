@@ -6,6 +6,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { router } from 'expo-router';
@@ -14,6 +15,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import Animated, {
   Easing,
+  FadeInUp,
   Extrapolation,
   interpolate,
   useAnimatedStyle,
@@ -33,7 +35,6 @@ import {
   velaCurrentSkyProvider,
   type AstroContext,
   type NatalChartProvider,
-  type ReadingTopic,
 } from '@/astrology';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -44,7 +45,8 @@ const ORACLE_READING_URL =
 const SUPABASE_PUBLISHABLE_KEY =
   'sb_publishable_LQ7hC_WSow7T09CAlSHV9A_25oG7QBu';
 
-const lunaWorldHero = require('../../assets/characters/luna-world-hero-clean.png');
+const lunaWorldHero = require('../../assets/characters/luna-world-hero-fast.jpg');
+const lunaWorldBackground = require('../../assets/characters/luna-world-bg-fast.jpg');
 
 const lunaCardBacks = [
   require('../../assets/cards/luna-card-back.png'),
@@ -72,6 +74,7 @@ const LUNA_TAROT_FRONTS = [
       'Her şey henüz görünür değil. Luna burada sezgini öne çıkarıyor: korkuyla sezgiyi birbirinden ayırdığında, gizli kalan gerçek daha netleşecek.',
   },
 ] as const;
+
 
 const CARD_CHOICE_LABELS = ['AŞK', 'BAĞLANTI', 'KENDİM'] as const;
 
@@ -134,18 +137,54 @@ interface OracleWorldScreenProps {
   natalChartProvider: NatalChartProvider;
 }
 
+
+function StaticTableCards({
+  hiddenIndex,
+}: {
+  hiddenIndex: number | null;
+}) {
+  return (
+    <>
+      {CARD_LAYOUT.map((layout, index) => (
+        <View
+          key={`static-card-${index}`}
+          pointerEvents="none"
+          style={[
+            styles.staticCardShell,
+            {
+              left: layout.left,
+              top: layout.top,
+              transform: [{ rotateZ: `${layout.rotate}deg` }],
+              opacity: hiddenIndex === index ? 0 : 1,
+            },
+          ]}
+        >
+          <Image
+            source={lunaCardBacks[0]}
+            style={styles.cardImage}
+            resizeMode="contain"
+          />
+          <Text style={styles.choiceLabelStatic}>{CARD_CHOICE_LABELS[index]}</Text>
+        </View>
+      ))}
+    </>
+  );
+}
+
 function TableCard({
   index,
   source,
   selectedIndex,
   progress,
   onPress,
+  visibleBack = true,
 }: {
   index: number;
   source: number;
   selectedIndex: number | null;
   progress: SharedValue<number>;
   onPress: () => void;
+  visibleBack?: boolean;
 }) {
   const isSelected = selectedIndex === index;
   const anotherSelected = selectedIndex !== null && !isSelected;
@@ -183,12 +222,7 @@ function TableCard({
       index === 0 ? CARD_CENTER_SHIFT : index === 2 ? -CARD_CENTER_SHIFT : 0;
 
     return {
-      opacity: interpolate(
-        progress.value,
-        [0, 0.84, 0.98, 1],
-        [1, 1, 0.15, 0],
-        Extrapolation.CLAMP,
-      ),
+      opacity: 1,
       transform: [
         {
           translateX: interpolate(
@@ -296,7 +330,13 @@ function TableCard({
         style={styles.cardPressable}
       >
         <View style={styles.flipper}>
-          <Animated.View style={[styles.cardSide, backFaceStyle]}>
+          <Animated.View
+            style={[
+              styles.cardSide,
+              backFaceStyle,
+              !visibleBack ? styles.invisibleBackFace : null,
+            ]}
+          >
             <Image source={source} style={styles.cardImage} resizeMode="contain" />
           </Animated.View>
 
@@ -312,9 +352,11 @@ function TableCard({
         </View>
       </Pressable>
 
-      <Animated.Text style={[styles.choiceLabel, labelStyle]}>
-        {CARD_CHOICE_LABELS[index]}
-      </Animated.Text>
+      {visibleBack ? (
+        <Animated.Text style={[styles.choiceLabel, labelStyle]}>
+          {CARD_CHOICE_LABELS[index]}
+        </Animated.Text>
+      ) : null}
     </Animated.View>
   );
 }
@@ -326,10 +368,10 @@ export function OracleWorldScreen({
 }: OracleWorldScreenProps) {
   const { profile } = useAstroProfile();
 
-  const [assetsReady, setAssetsReady] = useState(false);
-  const [loadedAssetCount, setLoadedAssetCount] = useState(0);
+
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [revealComplete, setRevealComplete] = useState(false);
+  const [userQuestion, setUserQuestion] = useState('');
 
   const [astroContext, setAstroContext] = useState<AstroContext | null>(null);
   const [astroLoading, setAstroLoading] = useState(false);
@@ -353,18 +395,6 @@ export function OracleWorldScreen({
   const heroSource = oracle.id === 'luna' ? lunaWorldHero : oracle.artwork;
   const selectedTarot =
     selectedIndex !== null ? LUNA_TAROT_FRONTS[selectedIndex] : null;
-
-  const preloadSources = [
-    heroSource,
-    ...lunaCardBacks,
-    ...LUNA_TAROT_FRONTS.map((card) => card.source),
-  ];
-
-  useEffect(() => {
-    if (loadedAssetCount >= preloadSources.length) {
-      setAssetsReady(true);
-    }
-  }, [loadedAssetCount, preloadSources.length]);
 
   useEffect(() => {
     skyDrift.value = withRepeat(
@@ -456,9 +486,10 @@ export function OracleWorldScreen({
   }, [oracle.id, profile, natalChartProvider]);
 
   /*
-   * IMPORTANT:
-   * Data work starts the instant the user taps a card.
-   * It runs in parallel with the 1.1s reveal animation instead of waiting for it.
+   * Reading strategy:
+   * The AI call must never wait several seconds for astrology.
+   * If exact astro context is ready, use it. Otherwise wait max 300ms,
+   * start the reading, and let astro finish in the background for "Neden şimdi?".
    */
   useEffect(() => {
     let cancelled = false;
@@ -468,12 +499,65 @@ export function OracleWorldScreen({
         return;
       }
 
-      const topic = CHOICE_TOPIC_MAP[selectedIndex] ?? 'general';
+      const topic = CHOICE_TOPIC_MAP[selectedIndex];
       const tarot = LUNA_TAROT_FRONTS[selectedIndex];
 
       setOracleReading(null);
       setOracleReadingError(null);
       setOracleReadingLoading(true);
+
+      let contextPromise: Promise<AstroContext | null> | null = null;
+
+      if (profile) {
+        const cachedContext = preparedAstroRef.current[topic];
+
+        if (cachedContext) {
+          setAstroContext(cachedContext);
+          setAstroLoading(false);
+          contextPromise = Promise.resolve(cachedContext);
+        } else {
+          setAstroLoading(true);
+
+          contextPromise = (async () => {
+            try {
+              const natal = await createNatalChart({
+                provider: natalChartProvider,
+                birthProfile: profile,
+              });
+
+              const context = await createAstroContext({
+                provider: velaCurrentSkyProvider,
+                birthProfile: profile,
+                natal,
+                topic,
+              });
+
+              preparedAstroRef.current[topic] = context;
+
+              if (!cancelled) {
+                setAstroContext(context);
+              }
+
+              return context;
+            } catch (error) {
+              console.warn('[VELA] Astro context could not be created.', error);
+
+              if (!cancelled) {
+                setAstroContext(null);
+              }
+
+              return null;
+            } finally {
+              if (!cancelled) {
+                setAstroLoading(false);
+              }
+            }
+          })();
+        }
+      } else {
+        setAstroContext(null);
+        setAstroLoading(false);
+      }
 
       let readingSignals: Array<{
         title: string;
@@ -481,56 +565,21 @@ export function OracleWorldScreen({
         score: number;
       }> = [];
 
-      if (profile) {
-        setAstroLoading(true);
+      if (contextPromise) {
+        const fastContext = await Promise.race([
+          contextPromise,
+          new Promise<null>((resolve) => {
+            setTimeout(() => resolve(null), 300);
+          }),
+        ]);
 
-        try {
-          let nextContext = preparedAstroRef.current[topic];
-
-          if (!nextContext && astroWarmupPromiseRef.current) {
-            const warmed = await astroWarmupPromiseRef.current;
-            nextContext = warmed[topic];
-          }
-
-          if (!nextContext) {
-            const natal = await createNatalChart({
-              provider: natalChartProvider,
-              birthProfile: profile,
-            });
-
-            nextContext = await createAstroContext({
-              provider: velaCurrentSkyProvider,
-              birthProfile: profile,
-              natal,
-              topic,
-            });
-
-            preparedAstroRef.current[topic] = nextContext;
-          }
-
-          readingSignals = nextContext.relevantSignals.map((signal) => ({
+        if (fastContext) {
+          readingSignals = fastContext.relevantSignals.map((signal) => ({
             title: signal.title,
             detail: signal.detail,
             score: signal.score,
           }));
-
-          if (!cancelled) {
-            setAstroContext(nextContext);
-          }
-        } catch (error) {
-          console.warn('[VELA] Astro context could not be created.', error);
-
-          if (!cancelled) {
-            setAstroContext(null);
-          }
-        } finally {
-          if (!cancelled) {
-            setAstroLoading(false);
-          }
         }
-      } else if (!cancelled) {
-        setAstroContext(null);
-        setAstroLoading(false);
       }
 
       try {
@@ -543,6 +592,7 @@ export function OracleWorldScreen({
           body: JSON.stringify({
             oracle: 'luna',
             topic,
+            question: userQuestion.trim() || undefined,
             tarot: {
               name: tarot.name,
               meaning: tarot.meaning,
@@ -592,7 +642,13 @@ export function OracleWorldScreen({
     return () => {
       cancelled = true;
     };
-  }, [oracle.id, selectedIndex, profile, natalChartProvider]);
+  }, [
+    oracle.id,
+    selectedIndex,
+    profile,
+    natalChartProvider,
+    userQuestion,
+  ]);
 
   const handleCardPress = (index: number) => {
     if (selectedIndex !== null) return;
@@ -608,14 +664,14 @@ export function OracleWorldScreen({
 
     reveal.value = 0;
     reveal.value = withTiming(1, {
-      duration: 850,
+      duration: 950,
       easing: Easing.inOut(Easing.cubic),
     });
 
     setTimeout(() => {
       setRevealComplete(true);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }, 850);
+    }, 2450);
   };
 
   const handleReset = () => {
@@ -641,26 +697,10 @@ export function OracleWorldScreen({
 
   return (
     <View style={styles.screen}>
-      <View pointerEvents="none" style={styles.preloadRack}>
-        {preloadSources.map((source, index) => (
-          <Image
-            key={`vela-preload-${index}`}
-            source={source}
-            style={styles.preloadImage}
-            onLoadEnd={() => {
-              setLoadedAssetCount((count) =>
-                Math.min(count + 1, preloadSources.length),
-              );
-            }}
-          />
-        ))}
-      </View>
-
       <Image
-        source={heroSource}
+        source={oracle.id === 'luna' ? lunaWorldBackground : heroSource}
         style={StyleSheet.absoluteFill}
         resizeMode="cover"
-        blurRadius={26}
       />
 
       <LinearGradient
@@ -699,124 +739,182 @@ export function OracleWorldScreen({
           <View style={styles.headerSpacer} />
         </View>
 
-        {!isReadingMode ? (
-          <View style={styles.selectionScene}>
-            <View style={styles.selectionHero}>
-              <Image
-                source={heroSource}
-                style={styles.selectionHeroImage}
-                resizeMode="cover"
-              />
+        <View style={styles.selectionScene}>
+          <View style={styles.selectionHero}>
+            <Image
+              source={heroSource}
+              style={styles.selectionHeroImage}
+              resizeMode="cover"
+            />
 
-              <LinearGradient
-                colors={[
-                  'rgba(4,2,8,0.36)',
-                  'transparent',
-                  'rgba(4,2,8,0.94)',
-                ]}
-                locations={[0, 0.58, 1]}
-                style={StyleSheet.absoluteFill}
-                pointerEvents="none"
-              />
+            <LinearGradient
+              colors={[
+                'rgba(4,2,8,0.36)',
+                'transparent',
+                'rgba(4,2,8,0.94)',
+              ]}
+              locations={[0, 0.58, 1]}
+              style={StyleSheet.absoluteFill}
+              pointerEvents="none"
+            />
 
-              <LinearGradient
-                colors={[
-                  'rgba(4,2,8,0.88)',
-                  'transparent',
-                  'rgba(4,2,8,0.88)',
-                ]}
-                start={{ x: 0, y: 0.5 }}
-                end={{ x: 1, y: 0.5 }}
-                style={StyleSheet.absoluteFill}
-                pointerEvents="none"
-              />
+            <LinearGradient
+              colors={[
+                'rgba(4,2,8,0.88)',
+                'transparent',
+                'rgba(4,2,8,0.88)',
+              ]}
+              start={{ x: 0, y: 0.5 }}
+              end={{ x: 1, y: 0.5 }}
+              style={StyleSheet.absoluteFill}
+              pointerEvents="none"
+            />
 
-              {oracle.id === 'luna' && assetsReady
-                ? config.choices.slice(0, 3).map((choice, index) => (
-                    <TableCard
-                      key={choice.id}
-                      index={index}
-                      source={lunaCardBacks[index]}
-                      selectedIndex={selectedIndex}
-                      progress={reveal}
-                      onPress={() => handleCardPress(index)}
-                    />
-                  ))
-                : null}
-            </View>
+            {oracle.id === 'luna' && !isReadingMode ? (
+              <>
+                <StaticTableCards
+                  hiddenIndex={selectedIndex === null ? null : selectedIndex}
+                />
 
+                {selectedIndex === null
+                  ? config.choices.slice(0, 3).map((choice, index) => (
+                      <TableCard
+                        key={`hit-${choice.id}`}
+                        index={index}
+                        source={lunaCardBacks[0]}
+                        selectedIndex={selectedIndex}
+                        progress={reveal}
+                        visibleBack={false}
+                        onPress={() => handleCardPress(index)}
+                      />
+                    ))
+                  : (
+                      <TableCard
+                        key={`selected-${config.choices[selectedIndex]?.id ?? selectedIndex}`}
+                        index={selectedIndex}
+                        source={lunaCardBacks[0]}
+                        selectedIndex={selectedIndex}
+                        progress={reveal}
+                        onPress={() => {}}
+                      />
+                    )}
+              </>
+            ) : null}
+          </View>
+
+          {!isReadingMode ? (
             <View style={styles.selectionCopy}>
               <Text style={styles.title}>{config.title}</Text>
 
-              <Text style={styles.subtitle}>
-                {!assetsReady
-                  ? 'Luna’nın dünyası hazırlanıyor…'
-                  : selectedIndex !== null
-                    ? 'Kart sana açılıyor…'
-                    : 'Önündeki üç karttan birini seç.'}
-              </Text>
-            </View>
-          </View>
-        ) : (
-          <ScrollView
-            style={styles.readingScroll}
-            contentContainerStyle={styles.readingContent}
-            showsVerticalScrollIndicator={false}
-          >
-            <View style={styles.readingHero}>
-              <Image
-                source={heroSource}
-                style={styles.readingHeroImage}
-                resizeMode="cover"
-              />
+              {selectedIndex === null ? (
+                <>
+                  <View style={styles.questionPanel}>
+                    <Text style={styles.questionEyebrow}>KALBİNDEKİNİ YAZ</Text>
+                    <TextInput
+                      value={userQuestion}
+                      onChangeText={setUserQuestion}
+                      placeholder="Aklındaki kişiyi, bağı ya da soruyu birkaç kelimeyle anlat…"
+                      placeholderTextColor="rgba(255,232,204,0.38)"
+                      style={styles.questionInput}
+                      multiline
+                      maxLength={180}
+                      returnKeyType="done"
+                      blurOnSubmit
+                    />
+                    <Text style={styles.questionHint}>
+                      Boş bırakabilirsin; kart yine kendi mesajını açar.
+                    </Text>
+                  </View>
 
-              <LinearGradient
-                colors={[
-                  'rgba(4,2,8,0.08)',
-                  'rgba(4,2,8,0.30)',
-                  'rgba(4,2,8,1)',
-                ]}
-                locations={[0, 0.55, 1]}
-                style={StyleSheet.absoluteFill}
-              />
-            </View>
-
-            <View style={styles.readingBody}>
-              <Text style={styles.readingEyebrow}>LUNA’NIN YORUMU</Text>
-              <Text style={styles.readingCardName}>{selectedTarot.name}</Text>
-
-              {oracleReadingLoading || astroLoading ? (
-                <View style={styles.loadingBlock}>
-                  <Text style={styles.loadingGlyph}>✦</Text>
-                  <Text style={styles.readingLoading}>
-                    Luna kartını ve gökyüzünü birlikte yorumluyor…
+                  <Text style={styles.subtitle}>
+                    Sonra önündeki üç karttan birini seç.
                   </Text>
-                </View>
+                </>
               ) : (
                 <>
-                  <Text style={styles.readingText}>{finalReading}</Text>
-
-                  {oracleReadingError ? (
-                    <Text style={styles.readingError}>
-                      {oracleReadingError}
+                  {userQuestion.trim() ? (
+                    <Text style={styles.selectedQuestion} numberOfLines={2}>
+                      “{userQuestion.trim()}”
                     </Text>
                   ) : null}
-
-                  {whyNowText ? (
-                    <View style={styles.whyNowPanel}>
-                      <Text style={styles.whyNowEyebrow}>✦ NEDEN ŞİMDİ?</Text>
-                      <Text style={styles.whyNowText}>{whyNowText}</Text>
-                    </View>
-                  ) : null}
+                  <Text style={styles.subtitle}>Kart sana açılıyor…</Text>
                 </>
               )}
-
-              <Pressable onPress={handleReset} style={styles.resetButton}>
-                <Text style={styles.resetText}>BAŞKA BİR KART SEÇ</Text>
-              </Pressable>
             </View>
-          </ScrollView>
-        )}
+          ) : null}
+
+          {isReadingMode && selectedTarot ? (
+            <Animated.View
+              entering={FadeInUp.duration(360).easing(Easing.out(Easing.cubic))}
+              style={styles.readingSheet}
+            >
+              <ScrollView
+                style={styles.readingScroll}
+                contentContainerStyle={styles.readingContent}
+                showsVerticalScrollIndicator={false}
+              >
+                <View style={styles.readingBody}>
+                  <Text style={styles.readingEyebrow}>LUNA’NIN YORUMU</Text>
+
+                  <View style={styles.readingCardHero}>
+                    <Image
+                      source={selectedTarot.source}
+                      style={styles.readingCardImage}
+                      resizeMode="contain"
+                    />
+                    <View style={styles.readingCardMeta}>
+                      <Text style={styles.readingCardLabel}>AÇILAN KART</Text>
+                      <Text style={styles.readingCardName}>
+                        {selectedTarot.name}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {userQuestion.trim() ? (
+                    <View style={styles.readingQuestionPanel}>
+                      <Text style={styles.readingQuestionLabel}>
+                        KALBİNDEKİ
+                      </Text>
+                      <Text style={styles.readingQuestionText}>
+                        {userQuestion.trim()}
+                      </Text>
+                    </View>
+                  ) : null}
+
+                  {oracleReadingLoading ? (
+                    <View style={styles.loadingBlock}>
+                      <Text style={styles.loadingGlyph}>✦</Text>
+                      <Text style={styles.readingLoading}>
+                        Luna kartını ve gökyüzünü birlikte yorumluyor…
+                      </Text>
+                    </View>
+                  ) : (
+                    <>
+                      <Text style={styles.readingText}>{finalReading}</Text>
+
+                      {oracleReadingError ? (
+                        <Text style={styles.readingError}>
+                          {oracleReadingError}
+                        </Text>
+                      ) : null}
+
+                      {whyNowText ? (
+                        <View style={styles.whyNowPanel}>
+                          <Text style={styles.whyNowEyebrow}>✦ NEDEN ŞİMDİ?</Text>
+                          <Text style={styles.whyNowText}>{whyNowText}</Text>
+                        </View>
+                      ) : null}
+                    </>
+                  )}
+
+                  <Pressable onPress={handleReset} style={styles.resetButton}>
+                    <Text style={styles.resetText}>BAŞKA BİR KART SEÇ</Text>
+                  </Pressable>
+                </View>
+              </ScrollView>
+            </Animated.View>
+          ) : null}
+        </View>
       </SafeAreaView>
     </View>
   );
@@ -828,18 +926,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
 
-  preloadRack: {
-    position: 'absolute',
-    width: 1,
-    height: 1,
-    opacity: 0,
-    overflow: 'hidden',
-  },
 
-  preloadImage: {
-    width: 1,
-    height: 1,
-  },
+
+
 
   safeArea: {
     flex: 1,
@@ -884,7 +973,14 @@ const styles = StyleSheet.create({
 
   selectionScene: {
     flex: 1,
+    position: 'relative',
   },
+
+
+
+
+
+
 
   selectionHero: {
     flex: 1,
@@ -916,6 +1012,74 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     textAlign: 'center',
     marginTop: spacing.xxs,
+  },
+
+  questionPanel: {
+    width: '100%',
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.sm,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,220,180,0.22)',
+    backgroundColor: 'rgba(7,3,12,0.72)',
+  },
+
+  questionEyebrow: {
+    ...typeScale.caption,
+    color: colors.gold,
+    letterSpacing: 1.6,
+    marginBottom: spacing.xxs,
+  },
+
+  questionInput: {
+    ...typeScale.body,
+    color: colors.textPrimary,
+    minHeight: 44,
+    maxHeight: 78,
+    paddingVertical: 7,
+    paddingHorizontal: 0,
+    textAlignVertical: 'top',
+  },
+
+  questionHint: {
+    ...typeScale.caption,
+    color: colors.textSecondary,
+    opacity: 0.58,
+    marginTop: 2,
+  },
+
+  selectedQuestion: {
+    ...typeScale.body,
+    color: colors.textPrimary,
+    textAlign: 'center',
+    opacity: 0.82,
+    marginTop: spacing.xs,
+    paddingHorizontal: spacing.md,
+  },
+
+  staticCardShell: {
+    position: 'absolute',
+    width: '20%',
+    aspectRatio: 0.68,
+    zIndex: 4,
+  },
+
+  choiceLabelStatic: {
+    position: 'absolute',
+    top: '108%',
+    left: -18,
+    right: -18,
+    textAlign: 'center',
+    ...typeScale.caption,
+    color: 'rgba(255,232,204,0.86)',
+    fontSize: 10,
+    letterSpacing: 1.6,
+  },
+
+  invisibleBackFace: {
+    opacity: 0,
   },
 
   tableCardShell: {
@@ -967,6 +1131,20 @@ const styles = StyleSheet.create({
     height: '100%',
   },
 
+  readingSheet: {
+    position: 'absolute',
+    zIndex: 200,
+    left: spacing.md,
+    right: spacing.md,
+    top: '49%',
+    bottom: spacing.sm,
+    borderRadius: 28,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,220,180,0.22)',
+    backgroundColor: 'rgba(7,3,12,0.94)',
+  },
+
   readingScroll: {
     flex: 1,
   },
@@ -975,20 +1153,9 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xl,
   },
 
-  readingHero: {
-    width: SCREEN_WIDTH,
-    height: 330,
-    overflow: 'hidden',
-  },
-
-  readingHeroImage: {
-    width: '100%',
-    height: '100%',
-  },
-
   readingBody: {
-    marginTop: -44,
-    paddingHorizontal: spacing.xl,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
     alignItems: 'center',
   },
 
@@ -998,23 +1165,73 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
   },
 
+  readingCardHero: {
+    width: '100%',
+    marginTop: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+
+  readingCardImage: {
+    width: 72,
+    height: 124,
+    borderRadius: radius.sm,
+  },
+
+  readingCardMeta: {
+    flex: 1,
+    alignItems: 'flex-start',
+  },
+
+  readingCardLabel: {
+    ...typeScale.caption,
+    color: colors.gold,
+    letterSpacing: 1.5,
+  },
+
   readingCardName: {
     ...typeScale.displaySmall,
     color: colors.textPrimary,
     marginTop: spacing.xxs,
   },
 
+  readingQuestionPanel: {
+    width: '100%',
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,220,180,0.16)',
+    backgroundColor: 'rgba(255,255,255,0.025)',
+  },
+
+  readingQuestionLabel: {
+    ...typeScale.caption,
+    color: colors.gold,
+    letterSpacing: 1.4,
+  },
+
+  readingQuestionText: {
+    ...typeScale.body,
+    color: colors.textPrimary,
+    marginTop: 3,
+    lineHeight: 21,
+  },
+
   readingText: {
     ...typeScale.body,
     color: colors.textSecondary,
-    textAlign: 'center',
+    textAlign: 'left',
+    width: '100%',
     marginTop: spacing.md,
-    lineHeight: 24,
+    lineHeight: 23,
   },
 
   loadingBlock: {
-    minHeight: 112,
-    marginTop: spacing.md,
+    minHeight: 82,
+    marginTop: spacing.sm,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1042,7 +1259,7 @@ const styles = StyleSheet.create({
 
   whyNowPanel: {
     width: '100%',
-    marginTop: spacing.lg,
+    marginTop: spacing.md,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
     borderRadius: radius.md,
